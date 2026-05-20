@@ -1,3 +1,4 @@
+import os
 import time
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -16,6 +17,7 @@ def crear_driver(headless: bool = False) -> webdriver.Chrome:
     # Estas opciones van SIEMPRE, no solo en headless
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
@@ -23,10 +25,16 @@ def crear_driver(headless: bool = False) -> webdriver.Chrome:
     if headless:
         options.add_argument("--headless=new")
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=options
-    )
+    # En contenedor (Render) se usan los binarios instalados por apt vía variables de entorno;
+    # en local (Mac) caen ambos a None y se usa webdriver-manager + Chrome del sistema.
+    chrome_bin = os.getenv("CHROME_BIN")
+    if chrome_bin:
+        options.binary_location = chrome_bin
+
+    chromedriver_path = os.getenv("CHROMEDRIVER_PATH")
+    service = Service(chromedriver_path) if chromedriver_path else Service(ChromeDriverManager().install())
+
+    driver = webdriver.Chrome(service=service, options=options)
     driver.execute_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )

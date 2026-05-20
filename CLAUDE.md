@@ -51,9 +51,18 @@ Tres archivos:
 
 3. **`main.py` — FastAPI app.** Carga `.env`, define `LoginRequest`, valida que el RUT incluya `-`, **desencripta** `payload.password` con `desencriptar()`, y llama a `login_sii` vía `run_in_threadpool` porque Selenium es síncrono y bloqueante (no usar `async def` para llamarlo directamente — bloquearía el event loop). Errores de desencriptación → `HTTP 422`, errores de login → `HTTP 502`.
 
+## Deploy (Render)
+
+Se despliega como **Docker web service** en Render. El `Dockerfile` instala `chromium` + `chromium-driver` vía apt (Render no trae Chrome preinstalado) y setea dos env vars: `CHROME_BIN=/usr/bin/chromium` y `CHROMEDRIVER_PATH=/usr/bin/chromedriver`. `sii_client.crear_driver` las lee — si están presentes usa los binarios del sistema, si no caen ambos a `None` y vuelve a `webdriver-manager` (para correr en Mac local).
+
+En el dashboard de Render, el servicio debe tener:
+- **Environment:** Docker (no Python nativo)
+- **Env vars adicionales:** `ENCRYPTION_KEY` (igual a la del cliente que encripta). `CHROME_BIN` y `CHROMEDRIVER_PATH` ya vienen del Dockerfile.
+- Puerto: Render inyecta `$PORT`; el CMD del Dockerfile lo respeta.
+
 ## Notas operacionales
 
 - Selenium arranca un Chrome real por cada request a `/login`. Esto es lento (varios segundos) y costoso en RAM. No es seguro para alta concurrencia tal como está — si llega tráfico, considerar pool de drivers o cola async.
-- ChromeDriver lo gestiona `webdriver-manager` automáticamente.
+- ChromeDriver lo gestiona `webdriver-manager` en local; en Docker viene del paquete apt `chromium-driver`.
 - El `time.sleep(2)` tras la redirección post-login existe porque algunas cookies se setean después del primer load; reducirlo puede dar sesiones incompletas.
-- Las credenciales ya no se leen de `.env` — vienen en el body del request. El archivo `.env` puede borrarse si no se usa para otra cosa.
+- Las credenciales del SII ya no se leen de `.env` — vienen en el body del request. `.env` ahora se usa solo para `ENCRYPTION_KEY`.

@@ -30,7 +30,6 @@ class EncryptRequest(BaseModel):
 class EncryptResponse(BaseModel):
     encriptado: str = Field(..., description="Texto encriptado en formato 'iv_hex:ciphertext_hex'")
 
-
 @app.post("/encrypt", response_model=EncryptResponse)
 async def encrypt(payload: EncryptRequest) -> EncryptResponse:
     try:
