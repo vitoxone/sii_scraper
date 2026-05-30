@@ -1,5 +1,8 @@
 import os
 import time
+import uuid
+
+import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -9,6 +12,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 
 LOGIN_URL = "https://zeusr.sii.cl//AUT2000/InicioAutenticacion/IngresoRutClave.html?https://misiir.sii.cl/cgi_misii/siihome.cgi"
+RCV_HOME_URL = "https://www4.sii.cl/consdcvinternetui/"
+RCV_COMPRA_URL = "https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompraExport"
+RCV_VENTA_URL = "https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleVentaExport"
 
 
 def crear_driver(headless: bool = False) -> webdriver.Chrome:
@@ -72,6 +78,14 @@ def login_sii(rut: str, clave: str, headless: bool = False) -> dict:
         wait.until(EC.url_contains("misiir.sii.cl"))
         time.sleep(2)
 
+        # Navegar al RCV para que se seteen las cookies de www4.sii.cl
+        # (TOKEN, CSESSIONID, NETSCAPE_LIVEWIRE.*, QueueITAccepted-*, TS3d*).
+        # Sin este paso, los POST a getDetalleCompraExport/getDetalleVentaExport son rechazados.
+        print("🌐 Navegando al RCV para completar cookies...")
+        driver.get(RCV_HOME_URL)
+        wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+        time.sleep(2)
+
         cookies = driver.get_cookies()
         session_data["cookies"] = {c["name"]: c["value"] for c in cookies}
 
@@ -108,3 +122,89 @@ def cookies_para_requests(session_data: dict) -> dict:
         "Cookie": cookie_str,
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     }
+
+
+def _parsear_csv_rcv(data: list) -> list[dict]:
+    if not data:
+        return []
+    headers = data[0].split(";")
+    n = len(headers)
+    filas = []
+    for raw in data[1:]:
+        valores = raw.split(";")
+        if len(valores) < n:
+            valores = valores + [""] * (n - len(valores))
+        elif len(valores) > n:
+            valores = valores[:n]
+        filas.append(dict(zip(headers, valores)))
+    return filas
+
+
+def obtener_rcv(
+    session_data: dict,
+    rut_empresa_num: str,
+    dv_empresa: str,
+    periodo: str,
+    operacion: str,
+) -> list[dict]:
+    if operacion not in ("COMPRA", "VENTA"):
+        raise ValueError(f"operacion debe ser 'COMPRA' o 'VENTA', recibido: {operacion}")
+
+    cookies = session_data.get("cookies", {})
+    conversation_id = cookies.get("TOKEN") or cookies.get("CSESSIONID")
+    if not conversation_id:
+        raise RuntimeError("No se encontró TOKEN/CSESSIONID en las cookies de sesión")
+
+    if operacion == "COMPRA":
+        url = RCV_COMPRA_URL
+        namespace_suffix = "getDetalleCompraExport"
+        estado_contab = "REGISTRO"
+        accion_recaptcha = "RCV_DDETC"
+    else:
+        url = RCV_VENTA_URL
+        namespace_suffix = "getDetalleVentaExport"
+        estado_contab = ""
+        accion_recaptcha = "RCV_DDETV"
+
+    body = {
+        "metaData": {
+            "namespace": f"cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/{namespace_suffix}",
+            "conversationId": conversation_id,
+            "transactionId": str(uuid.uuid4()),
+            "page": None,
+        },
+        "data": {
+            "rutEmisor": rut_empresa_num,
+            "dvEmisor": dv_empresa,
+            "ptributario": periodo,
+            "codTipoDoc": 0,
+            "operacion": operacion,
+            "estadoContab": estado_contab,
+            "accionRecaptcha": accion_recaptcha,
+            "tokenRecaptcha": "t-o-k-e-n-web",
+        },
+    }
+
+    headers = cookies_para_requests(session_data)
+    headers.update({
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://www4.sii.cl",
+        "Referer": "https://www4.sii.cl/consdcvinternetui/",
+    })
+
+    print(f"📡 Consultando RCV {operacion} período {periodo} para {rut_empresa_num}-{dv_empresa}...")
+    response = requests.post(url, json=body, headers=headers, timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"SII RCV {operacion} respondió HTTP {response.status_code}: {response.text[:500]}"
+        )
+    payload = response.json()
+
+    resp_estado = payload.get("respEstado") or {}
+    cod = resp_estado.get("codRespuesta")
+    if cod is not None and cod != 0:
+        msg = resp_estado.get("msgeRespuesta") or resp_estado.get("codError") or "sin detalle"
+        raise RuntimeError(f"SII RCV {operacion} devolvió codRespuesta={cod}: {msg}")
+
+    return _parsear_csv_rcv(payload.get("data") or [])
