@@ -205,6 +205,11 @@ def obtener_rcv(
     cod = resp_estado.get("codRespuesta")
     if cod is not None and cod != 0:
         msg = resp_estado.get("msgeRespuesta") or resp_estado.get("codError") or "sin detalle"
+        # codRespuesta=99 significa que el período no tiene documentos (o es diferido).
+        # No es un error real: devolvemos una lista vacía para que el front lo maneje normal.
+        if cod == 99:
+            print(f"ℹ️  RCV {operacion} período {periodo}: sin documentos ({msg})")
+            return []
         raise RuntimeError(f"SII RCV {operacion} devolvió codRespuesta={cod}: {msg}")
 
     return _parsear_csv_rcv(payload.get("data") or [])
